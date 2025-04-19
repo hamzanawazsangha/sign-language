@@ -3,7 +3,7 @@ import tensorflow as tf
 import numpy as np
 import cv2
 from PIL import Image, ImageEnhance
-import gdown
+from huggingface_hub import hf_hub_download
 import os
 import time
 from typing import Tuple, Optional
@@ -14,8 +14,9 @@ from typing import Tuple, Optional
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # Suppress TensorFlow warnings
 tf.get_logger().setLevel('ERROR')
 
-MODEL_URL = "https://drive.google.com/uc?id=1UVHX3ePXl89Aeg6XxPg4QnyboGJ1SywJ"
-MODEL_PATH = "final_sign.keras"
+# Hugging Face Model Configuration
+REPO_ID = "HamzaNawaz17/Sign_Language_Detection"
+MODEL_FILE = "sign_lang_model.keras"
 CLASS_NAMES = [
     '1', '10', '2', '3', '4', '5', '6', '7', '8', '9',
     'A', 'B', 'Blank', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J',
@@ -30,43 +31,27 @@ MIN_CONFIDENCE = 0.7  # Minimum confidence threshold
 # ======================
 @st.cache_resource(show_spinner=False)
 def load_model() -> Optional[tf.keras.Model]:
-    """Load model with multiple fallback strategies"""
-    # Try loading existing model first
-    if os.path.exists(MODEL_PATH):
-        try:
-            return tf.keras.models.load_model(MODEL_PATH)
-        except Exception:
-            os.remove(MODEL_PATH)  # Remove corrupted file
-    
-    # Download model with progress indicator
-    progress_bar = st.progress(0)
-    status_text = st.empty()
-    
+    """Load model from Hugging Face Hub with progress tracking"""
     try:
-        def update_progress(current, total, width=80):
-            progress = current / total
-            progress_bar.progress(progress)
-            status_text.text(f"Downloading: {current/(1024*1024):.1f}MB / {total/(1024*1024):.1f}MB")
-        
-        with st.spinner("Downloading model (400MB)..."):
-            gdown.download(
-                MODEL_URL,
-                MODEL_PATH,
-                quiet=True,
-                resume=True,
-                progress=update_progress
+        with st.spinner("Downloading model from Hugging Face Hub..."):
+            model_path = hf_hub_download(
+                repo_id=REPO_ID,
+                filename=MODEL_FILE,
+                cache_dir="models",
+                force_download=False,
+                resume_download=True
             )
-        
-        # Verify download
-        if os.path.exists(MODEL_PATH):
-            return tf.keras.models.load_model(MODEL_PATH)
-        
+            return tf.keras.models.load_model(model_path)
     except Exception as e:
-        st.error(f"Model download failed: {str(e)}")
-    
-    progress_bar.empty()
-    status_text.empty()
-    return None
+        st.error(f"""
+            Model loading failed: {str(e)}
+            
+            Possible solutions:
+            1. Check internet connection
+            2. Verify the repository '{REPO_ID}' exists
+            3. Ensure file '{MODEL_FILE}' exists in the repository
+        """)
+        return None
 
 def preprocess_image(image: Image.Image) -> np.ndarray:
     """Optimized image preprocessing pipeline"""
@@ -227,8 +212,11 @@ def main():
         st.error("""
             Model failed to load. Please:
             1. Check your internet connection
-            2. Ensure the model file is accessible
+            2. Verify the repository exists
             3. Try again later
+        """)
+        st.markdown(f"""
+            [View Model Repository on Hugging Face](https://huggingface.co/{REPO_ID})
         """)
         if st.button("Retry Loading"):
             st.rerun()
