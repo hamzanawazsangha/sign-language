@@ -11,8 +11,7 @@ from typing import Tuple, Optional
 # CONFIGURATION
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 tf.get_logger().setLevel('ERROR')
-
-MODEL_URL = "https://drive.google.com/uc?id=1UVHX3ePXl89Aeg6XxPg4QnyboGJ1SywJ"
+MODEL_URL = "https://drive.google.com/uc?id=1gwGG918XTWKST--gTuMtKDxnFyPFzgXV"
 MODEL_PATH = "final_sign.keras"
 CLASS_NAMES = [
     '1', '10', '2', '3', '4', '5', '6', '7', '8', '9',
