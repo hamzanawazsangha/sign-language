@@ -6,7 +6,6 @@ from PIL import Image, ImageEnhance
 import gdown
 import os
 import time
-import requests
 from typing import Tuple, Optional
 
 # ======================
@@ -15,9 +14,8 @@ from typing import Tuple, Optional
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # Suppress TensorFlow warnings
 tf.get_logger().setLevel('ERROR')
 
-DRIVE_FOLDER_ID = "1gwGG918XTWKST--gTuMtKDxnFyPFzgXV"
-MODEL_FILENAME = "final_model.keras"
-MODEL_PATH = "final_model.keras"
+MODEL_URL = "https://drive.google.com/uc?id=1UVHX3ePXl89Aeg6XxPg4QnyboGJ1SywJ"
+MODEL_PATH = "final_sign.keras"
 CLASS_NAMES = [
     '1', '10', '2', '3', '4', '5', '6', '7', '8', '9',
     'A', 'B', 'Blank', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J',
@@ -25,39 +23,7 @@ CLASS_NAMES = [
     'U', 'V', 'W', 'X', 'Y', 'Z', 'del', 'nothing', 'space'
 ]
 IMAGE_SIZE = (224, 224)
-MIN_CONFIDENCE = 0.7
-
-# ======================
-# MODEL DOWNLOAD UTILITIES
-# ======================
-def get_drive_file_id(folder_id: str, filename: str) -> Optional[str]:
-    """Get file ID from Google Drive folder"""
-    try:
-        url = f"https://drive.google.com/drive/folders/{folder_id}"
-        response = requests.get(url)
-        if response.status_code == 200:
-            # This is a simplified approach - in production you might need Google Drive API
-            for line in response.text.split('\n'):
-                if filename in line and 'data-id' in line:
-                    return line.split('data-id="')[1].split('"')[0]
-    except Exception as e:
-        st.error(f"Error accessing Drive folder: {str(e)}")
-    return None
-
-def download_from_drive(file_id: str, output_path: str) -> bool:
-    """Download file from Google Drive with progress"""
-    try:
-        url = f"https://drive.google.com/uc?id={file_id}"
-        gdown.download(
-            url,
-            output_path,
-            quiet=False,
-            resume=True
-        )
-        return os.path.exists(output_path)
-    except Exception as e:
-        st.error(f"Download failed: {str(e)}")
-        return False
+MIN_CONFIDENCE = 0.7  # Minimum confidence threshold
 
 # ======================
 # MODEL FUNCTIONS
@@ -73,52 +39,73 @@ def load_model() -> Optional[tf.keras.Model]:
             os.remove(MODEL_PATH)  # Remove corrupted file
     
     # Download model with progress indicator
-    with st.spinner("Locating model file in Google Drive..."):
-        file_id = get_drive_file_id(DRIVE_FOLDER_ID, MODEL_FILENAME)
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    
+    try:
+        def update_progress(current, total, width=80):
+            progress = current / total
+            progress_bar.progress(progress)
+            status_text.text(f"Downloading: {current/(1024*1024):.1f}MB / {total/(1024*1024):.1f}MB")
         
-        if not file_id:
-            st.error("Could not find model file in the specified Drive folder")
-            return None
+        with st.spinner("Downloading model (400MB)..."):
+            gdown.download(
+                MODEL_URL,
+                MODEL_PATH,
+                quiet=True,
+                resume=True,
+                progress=update_progress
+            )
         
-        st.info(f"Found model file (ID: {file_id}), starting download...")
+        # Verify download
+        if os.path.exists(MODEL_PATH):
+            return tf.keras.models.load_model(MODEL_PATH)
         
-        if download_from_drive(file_id, MODEL_PATH):
-            try:
-                return tf.keras.models.load_model(MODEL_PATH)
-            except Exception as e:
-                st.error(f"Model loading failed: {str(e)}")
-                return None
-        return None
-
-# [Rest of your existing functions remain the same: preprocess_image, predict, 
-# webcam_component, image_upload_component, and main]
+    except Exception as e:
+        st.error(f"Model download failed: {str(e)}")
+    
+    progress_bar.empty()
+    status_text.empty()
+    return None
 
 def preprocess_image(image: Image.Image) -> np.ndarray:
     """Optimized image preprocessing pipeline"""
+    # Convert to RGB and resize with high-quality resampling
     image = image.convert('RGB').resize(IMAGE_SIZE, Image.Resampling.LANCZOS)
+    
+    # Convert to array and normalize
     img_array = tf.keras.utils.img_to_array(image) / 255.0
+    
+    # Add batch dimension
     return np.expand_dims(img_array, axis=0)
 
 def predict(image: Image.Image, model: tf.keras.Model) -> Tuple[str, float]:
     """Make prediction with performance tracking"""
     img_array = preprocess_image(image)
     
+    # Time the prediction
     start_time = time.time()
     preds = model.predict(img_array, verbose=0)
     inference_time = time.time() - start_time
     
+    # Get results
     class_idx = np.argmax(preds)
     confidence = float(np.max(preds))
     label = CLASS_NAMES[class_idx]
     
+    # Handle low confidence
     if confidence < MIN_CONFIDENCE:
         label = f"Low Confidence ({label})"
     
+    # Display performance metrics
     st.sidebar.metric("Inference Time", f"{inference_time*1000:.1f}ms")
     st.sidebar.metric("Confidence Threshold", f"{MIN_CONFIDENCE*100:.0f}%")
     
     return label, confidence
 
+# ======================
+# STREAMLIT COMPONENTS
+# ======================
 def webcam_component(model: tf.keras.Model):
     """Real-time webcam detection component"""
     st.info("""
@@ -215,6 +202,9 @@ def image_upload_component(model: tf.keras.Model):
         except Exception as e:
             st.error(f"Image processing error: {str(e)}")
 
+# ======================
+# MAIN APP
+# ======================
 def main():
     # Configure page
     st.set_page_config(
@@ -237,12 +227,8 @@ def main():
         st.error("""
             Model failed to load. Please:
             1. Check your internet connection
-            2. Ensure the model file exists in the Drive folder
-            3. Verify the file is shared publicly
-            4. Try again later
-        """)
-        st.markdown(f"""
-            [Access Google Drive Folder](https://drive.google.com/drive/folders/{DRIVE_FOLDER_ID})
+            2. Ensure the model file is accessible
+            3. Try again later
         """)
         if st.button("Retry Loading"):
             st.rerun()
