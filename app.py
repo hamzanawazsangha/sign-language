@@ -32,7 +32,7 @@ def load_model() -> Optional[tf.keras.Model]:
     if not os.path.exists(MODEL_PATH):
         with st.spinner("Downloading model..."):
             try:
-                gdown.download(MODEL_URL, MODEL_PATH, quiet=False)
+                gdown.download(url=MODEL_URL, output=MODEL_PATH, quiet=False, use_cookies=False)
             except Exception as e:
                 st.error(f"Model download failed: {str(e)}")
                 return None
