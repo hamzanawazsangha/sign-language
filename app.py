@@ -19,23 +19,35 @@ IMAGE_SIZE = (224, 224)
 
 @st.cache_resource
 def load_model():
-    """Load the model from local storage or download from Google Drive if not available."""
+    """Load the model with enhanced error handling and retries."""
     if not os.path.exists(MODEL_PATH):
-        with st.spinner("Downloading model from Google Drive (this may take a while)..."):
+        with st.spinner("Downloading model (400MB)..."):
             try:
-                gdown.download(MODEL_URL, MODEL_PATH, quiet=False)
-                st.success("Model downloaded successfully!")
+                # Alternative download method with retries
+                gdown.download(
+                    "https://drive.google.com/uc?id=1UVHX3ePXl89Aeg6XxPg4QnyboGJ1SywJ",
+                    MODEL_PATH,
+                    quiet=False,
+                    fuzzy=True
+                )
+                
+                # Verify download completed
+                if not os.path.exists(MODEL_PATH):
+                    st.error("Download failed - file may be too large for Colab")
+                    return None
+                    
             except Exception as e:
-                st.error(f"Failed to download model: {str(e)}")
+                st.error(f"""Download failed. Please:
+                    1. Check the file is shared publicly (Anyone with link)
+                    2. Try manual download: [Download Model](https://drive.google.com/uc?id=1UVHX3ePXl89Aeg6XxPg4QnyboGJ1SywJ)
+                    Error: {str(e)}""")
                 return None
     
     try:
-        model = tf.keras.models.load_model(MODEL_PATH)
-        return model
+        return tf.keras.models.load_model(MODEL_PATH)
     except Exception as e:
-        st.error(f"Error loading model: {str(e)}")
+        st.error(f"Model loading failed. File may be corrupted. Error: {str(e)}")
         return None
-
 def preprocess_image(image):
     """Preprocess the image for model prediction."""
     img = image.resize(IMAGE_SIZE)
