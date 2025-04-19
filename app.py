@@ -2,16 +2,20 @@ import streamlit as st
 import tensorflow as tf
 import numpy as np
 import cv2
-from PIL import Image
+from PIL import Image, ImageEnhance
 import gdown
 import os
 import time
 from typing import Tuple, Optional
 
-# Configuration Constants
+# ======================
+# CONFIGURATION
+# ======================
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # Suppress TensorFlow warnings
+tf.get_logger().setLevel('ERROR')
+
 MODEL_URL = "https://drive.google.com/uc?id=1UVHX3ePXl89Aeg6XxPg4QnyboGJ1SywJ"
 MODEL_PATH = "final_sign.keras"
-BACKUP_MODEL_URL = "https://storage.googleapis.com/your-backup-bucket/final_sign.keras"  # Add your backup URL
 CLASS_NAMES = [
     '1', '10', '2', '3', '4', '5', '6', '7', '8', '9',
     'A', 'B', 'Blank', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J',
@@ -19,99 +23,67 @@ CLASS_NAMES = [
     'U', 'V', 'W', 'X', 'Y', 'Z', 'del', 'nothing', 'space'
 ]
 IMAGE_SIZE = (224, 224)
-MIN_CONFIDENCE = 0.7  # Minimum confidence threshold for reliable predictions
+MIN_CONFIDENCE = 0.7  # Minimum confidence threshold
 
-def setup_environment():
-    """Configure environment settings for optimal performance"""
-    os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # Suppress TensorFlow info messages
-    tf.get_logger().setLevel('ERROR')
-
+# ======================
+# MODEL FUNCTIONS
+# ======================
 @st.cache_resource(show_spinner=False)
 def load_model() -> Optional[tf.keras.Model]:
     """Load model with multiple fallback strategies"""
-    # First try loading existing model
+    # Try loading existing model first
     if os.path.exists(MODEL_PATH):
         try:
             return tf.keras.models.load_model(MODEL_PATH)
-        except Exception as e:
-            st.warning(f"Found corrupted model file. Redownloading... Error: {str(e)}")
-            os.remove(MODEL_PATH)
+        except Exception:
+            os.remove(MODEL_PATH)  # Remove corrupted file
     
-    # Model download with progress
+    # Download model with progress indicator
     progress_bar = st.progress(0)
     status_text = st.empty()
     
-    def download_progress(current, total, width=80):
-        progress = current / total
-        progress_bar.progress(progress)
-        status_text.text(f"Downloading: {current/(1024*1024):.1f}MB / {total/(1024*1024):.1f}MB")
-    
-    # Try primary download source
     try:
-        status_text.text("Starting download from Google Drive...")
-        gdown.download(
-            MODEL_URL,
-            MODEL_PATH,
-            quiet=True,
-            fuzzy=True,
-            resume=True,
-            progress=download_progress
-        )
-    except Exception as e:
-        st.warning(f"Primary download failed. Trying backup source... Error: {str(e)}")
-        try:
-            status_text.text("Starting download from backup server...")
+        def update_progress(current, total, width=80):
+            progress = current / total
+            progress_bar.progress(progress)
+            status_text.text(f"Downloading: {current/(1024*1024):.1f}MB / {total/(1024*1024):.1f}MB")
+        
+        with st.spinner("Downloading model (400MB)..."):
             gdown.download(
-                BACKUP_MODEL_URL,
+                MODEL_URL,
                 MODEL_PATH,
                 quiet=True,
                 resume=True,
-                progress=download_progress
+                progress=update_progress
             )
-        except Exception as e:
-            st.error(f"All download attempts failed: {str(e)}")
-            return None
-    
-    # Verify download
-    if not os.path.exists(MODEL_PATH):
-        st.error("Download completed but file not found. Please try again.")
-        return None
+        
+        # Verify download
+        if os.path.exists(MODEL_PATH):
+            return tf.keras.models.load_model(MODEL_PATH)
+        
+    except Exception as e:
+        st.error(f"Model download failed: {str(e)}")
     
     progress_bar.empty()
     status_text.empty()
-    
-    # Load the downloaded model
-    try:
-        return tf.keras.models.load_model(MODEL_PATH)
-    except Exception as e:
-        st.error(f"Model loading failed: {str(e)}")
-        return None
+    return None
 
 def preprocess_image(image: Image.Image) -> np.ndarray:
     """Optimized image preprocessing pipeline"""
-    # Convert to RGB if not already
-    if image.mode != 'RGB':
-        image = image.convert('RGB')
-    
-    # Resize with anti-aliasing
-    image = image.resize(IMAGE_SIZE, Image.Resampling.LANCZOS)
+    # Convert to RGB and resize with high-quality resampling
+    image = image.convert('RGB').resize(IMAGE_SIZE, Image.Resampling.LANCZOS)
     
     # Convert to array and normalize
     img_array = tf.keras.utils.img_to_array(image) / 255.0
     
-    # Expand dimensions for batch prediction
+    # Add batch dimension
     return np.expand_dims(img_array, axis=0)
 
 def predict(image: Image.Image, model: tf.keras.Model) -> Tuple[str, float]:
-    """Enhanced prediction with confidence thresholding"""
+    """Make prediction with performance tracking"""
     img_array = preprocess_image(image)
     
-    # Warm-up model (first prediction is slower)
-    if not hasattr(predict, '_warmed_up'):
-        model.predict(img_array)
-        predict._warmed_up = True
-    
-    # Measure prediction time
+    # Time the prediction
     start_time = time.time()
     preds = model.predict(img_array, verbose=0)
     inference_time = time.time() - start_time
@@ -121,7 +93,7 @@ def predict(image: Image.Image, model: tf.keras.Model) -> Tuple[str, float]:
     confidence = float(np.max(preds))
     label = CLASS_NAMES[class_idx]
     
-    # Low confidence handling
+    # Handle low confidence
     if confidence < MIN_CONFIDENCE:
         label = f"Low Confidence ({label})"
     
@@ -131,17 +103,20 @@ def predict(image: Image.Image, model: tf.keras.Model) -> Tuple[str, float]:
     
     return label, confidence
 
-def webcam_detection(model: tf.keras.Model):
-    """Optimized webcam processing with frame skipping"""
+# ======================
+# STREAMLIT COMPONENTS
+# ======================
+def webcam_component(model: tf.keras.Model):
+    """Real-time webcam detection component"""
     st.info("""
-        **Tips for better detection:**
+        **Tips for best results:**
         - Keep hand centered in frame
         - Use solid background if possible
-        - Ensure good lighting
+        - Ensure good lighting conditions
     """)
     
-    run = st.button("Start Webcam", key="start_webcam")
-    stop = st.button("Stop Webcam", key="stop_webcam")
+    run = st.button("Start Webcam")
+    stop = st.button("Stop Webcam")
     frame_placeholder = st.empty()
     
     if run:
@@ -150,9 +125,8 @@ def webcam_detection(model: tf.keras.Model):
             st.error("Could not access webcam. Please check permissions.")
             return
         
+        frame_skip = 2  # Process every 3rd frame for better performance
         frame_count = 0
-        fps = 0
-        prev_time = time.time()
         
         while cap.isOpened() and not stop:
             ret, frame = cap.read()
@@ -160,87 +134,79 @@ def webcam_detection(model: tf.keras.Model):
                 st.error("Frame capture error")
                 break
             
-            # Process every 3rd frame for better performance
             frame_count += 1
-            if frame_count % 3 != 0:
+            if frame_count % frame_skip != 0:
                 continue
             
-            # Flip and convert color space
+            # Process frame
             frame = cv2.flip(frame, 1)
             img_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             img_pil = Image.fromarray(img_rgb)
             
-            # Prediction
+            # Make prediction
             label, conf = predict(img_pil, model)
             
-            # Calculate FPS
-            curr_time = time.time()
-            fps = 1 / (curr_time - prev_time)
-            prev_time = curr_time
-            
-            # Display info
+            # Display results
             cv2.putText(img_rgb, f"{label} ({conf:.2f})", (10, 30),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 0, 0), 2)
-            cv2.putText(img_rgb, f"FPS: {fps:.1f}", (10, 70),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 0, 0), 2)
-            
             frame_placeholder.image(img_rgb, channels="RGB")
         
         cap.release()
 
-def image_upload_detection(model: tf.keras.Model):
-    """Enhanced image upload with preview and edit options"""
+def image_upload_component(model: tf.keras.Model):
+    """Image upload and processing component"""
     uploaded_file = st.file_uploader(
         "Upload ASL Image",
         type=['jpg', 'jpeg', 'png', 'webp'],
-        help="Clear images work best. Crop to hand if possible."
+        help="Clear images with visible hand signs work best"
     )
     
     if uploaded_file:
         try:
             img = Image.open(uploaded_file)
             
-            # Image preview with edit options
+            # Image editing interface
             col1, col2 = st.columns(2)
             with col1:
                 st.image(img, caption="Original Image", use_column_width=True)
             
             with col2:
-                # Simple image adjustments
-                brightness = st.slider("Adjust Brightness", 0.5, 1.5, 1.0, 0.1)
-                contrast = st.slider("Adjust Contrast", 0.5, 1.5, 1.0, 0.1)
+                # Image adjustment controls
+                brightness = st.slider("Brightness", 0.5, 1.5, 1.0, 0.1)
+                contrast = st.slider("Contrast", 0.5, 1.5, 1.0, 0.1)
                 
                 # Apply adjustments
-                from PIL import ImageEnhance
                 enhancer = ImageEnhance.Brightness(img)
                 img_adj = enhancer.enhance(brightness)
                 enhancer = ImageEnhance.Contrast(img_adj)
                 img_adj = enhancer.enhance(contrast)
                 st.image(img_adj, caption="Adjusted Image", use_column_width=True)
             
-            # Prediction on adjusted image
+            # Make prediction
             with st.spinner("Analyzing..."):
                 label, conf = predict(img_adj, model)
                 
-                # Visual confidence indicator
+                # Visual result display
                 confidence_color = "green" if conf >= MIN_CONFIDENCE else "orange"
                 st.markdown(f"""
-                <div style="padding: 10px; border-radius: 5px; background-color: #f0f2f6;">
-                    <h3 style="color: {confidence_color}; margin-bottom: 5px;">Prediction: {label}</h3>
-                    <div style="background: linear-gradient(90deg, #4CAF50 {conf*100}%, #f0f0f0 {conf*100}%); 
-                                height: 20px; border-radius: 3px;"></div>
-                    <p style="text-align: center; margin-top: 5px;">Confidence: {conf*100:.1f}%</p>
+                <div style="padding: 15px; border-radius: 8px; background-color: #f8f9fa; margin-top: 20px;">
+                    <h3 style="color: {confidence_color}; margin-bottom: 10px;">Prediction: {label}</h3>
+                    <div style="background: linear-gradient(90deg, #4CAF50 {conf*100}%, #e0e0e0 {conf*100}%); 
+                                height: 25px; border-radius: 5px;"></div>
+                    <p style="text-align: center; margin-top: 8px; font-size: 16px;">
+                        Confidence: <strong>{conf*100:.1f}%</strong>
+                    </p>
                 </div>
                 """, unsafe_allow_html=True)
                 
         except Exception as e:
             st.error(f"Image processing error: {str(e)}")
 
+# ======================
+# MAIN APP
+# ======================
 def main():
-    """Main application layout and logic"""
-    setup_environment()
-    
-    # App Header
+    # Configure page
     st.set_page_config(
         page_title="ASL Recognition Pro",
         page_icon="🤟",
@@ -248,40 +214,40 @@ def main():
         initial_sidebar_state="expanded"
     )
     
-    st.title("🤟 Advanced ASL Recognition")
+    # App header
+    st.title("🤟 Advanced ASL Recognition System")
     st.markdown("""
         Real-time American Sign Language detection using deep learning.  
-        For best results, ensure clear visibility of hand signs.
+        Get predictions via **webcam** or **image upload**.
     """)
     
-    # Model loading with retry option
-    model_placeholder = st.empty()
-    with model_placeholder.container():
-        model = load_model()
-    
+    # Load model
+    model = load_model()
     if model is None:
-        st.error("Model failed to load. Please try again or contact support.")
-        if st.button("Retry Model Loading"):
-            model_placeholder.empty()
-            with model_placeholder.container():
-                model = load_model()
-                st.experimental_rerun()
+        st.error("""
+            Model failed to load. Please:
+            1. Check your internet connection
+            2. Ensure the model file is accessible
+            3. Try again later
+        """)
+        if st.button("Retry Loading"):
+            st.rerun()
         return
     
     # Main application tabs
-    tab1, tab2 = st.tabs(["🎥 Live Detection", "🖼️ Image Analysis"])
+    tab1, tab2 = st.tabs(["🎥 Live Webcam Detection", "📷 Image Upload"])
     
     with tab1:
-        webcam_detection(model)
+        webcam_component(model)
     
     with tab2:
-        image_upload_detection(model)
+        image_upload_component(model)
     
     # Footer
     st.markdown("---")
     st.caption("""
-        **Note:** This system recognizes standard ASL alphabets and numbers.  
-        Performance depends on image quality, lighting, and background clarity.
+        **Note:** This system recognizes standard ASL alphabets and numbers (A-Z, 0-9).  
+        Performance depends on image quality and lighting conditions.
     """)
 
 if __name__ == "__main__":
